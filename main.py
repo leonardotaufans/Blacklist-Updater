@@ -35,7 +35,7 @@ class Conf:
     MOUNT = 'Z:'  # Where NAS would be letter-mounted.
     NAS_ADDR = '\\\\vm-winsrv16-1\\shared'  # Location on where the blacklist.txt and whitelist.txt file is stored.
     SELF_IP1 = '10.1.0.121'  # BIG IP Self IP address for Box 1.
-    SELF_IP2 = '10.1.0.122'  # BIG IP Self IP address for Box 2.
+    SELF_IP2 = ''  # BIG IP Self IP address for Box 2.
     LIST_PREFIX = "addresslist"  # Prefix for the address lists' name.
 
 
@@ -138,18 +138,20 @@ class Blacklist:
             nas_username = kr.get_password(f"{self.CONST_NAS}.username", username="username")
             nas_password = kr.get_password(f"{self.CONST_NAS}.password", username=nas_username)
             if nas_username is None or nas_password is None:
-                # todo: If needed, use custom exception here.
                 print('Username or password for NAS is not found. Ensure you have updated the username or \n'
                       'password and not delete them from the vault.')
                 exit(-1)
-            subprocess.check_output(
-                f"net use {Conf.MOUNT} {Conf.NAS_ADDR} /user:{nas_username} {nas_password}", shell=True)
+            try:
+                subprocess.check_output(f"net use Z: /delete", shell=True)
+                subprocess.check_output(
+                    f"net use {Conf.MOUNT} {Conf.NAS_ADDR} /user:{nas_username} {nas_password}", shell=True)
+            except subprocess.CalledProcessError as e:
+                print(f"Error while authenticating with NAS:\n{e.output}")
 
         # Get BIG IP username & password
         big_ip_username = kr.get_password(f"{self.CONST_BIGIP}.username", f"username")
         big_ip_password = kr.get_password(f"{self.CONST_BIGIP}.password", big_ip_username)
         if big_ip_username is None or big_ip_password is None:
-            # todo: If needed, use custom exception here.
             print('Username or password for BIG IP is not found. Ensure you have updated the username or \n'
                   'password and not delete them from the vault.')
             exit(-1)
@@ -163,13 +165,19 @@ class Blacklist:
             with open(f"{Conf.MOUNT}\\whitelist.txt") as __:
                 whitelist = self.split_list_to_2d(ip_list=[_.rstrip() for _ in __])
         except IOError as e:
+            print("Error: Reading latest blacklisted files failed. \n\nDetails:\n")
             print(e)
             exit(-1)
 
         # SSH to BIG IP
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy)
-        ssh.connect(hostname=Conf.SELF_IP1, username=big_ip_username, password=big_ip_password)
+        try:
+            ssh.connect(hostname=Conf.SELF_IP1, username=big_ip_username, password=big_ip_password)
+        except paramiko.ssh_exception.AuthenticationException as e:
+            print("Error: Authentication with BIG-IP failed. Please ensure your username/password are correct.")
+            print(f"Error details: {e}")
+            exit(-1)
         # List the address list to be checked later
         _, stdout, stderr = (ssh.exec_command(f"tmsh list net address-list address-lists | grep {Conf.LIST_PREFIX}"))
         list_addr = stdout.read().decode()
