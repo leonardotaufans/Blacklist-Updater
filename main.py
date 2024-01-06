@@ -1,18 +1,3 @@
-# Store username and password for NAS and BIG IP in Windows Secure Vault
-# To add argument parsing
-"""
-    Automates updating address lists.
-    ...
-    Methods
-    -------
-    update_credentials(self, device: str, username: str = '', password: str = '') : None
-        Method to update the credentials in Credential Manager.
-    which_array(self, ip_address: str) : int
-        To decide which list the IP address goes to.
-    split_list_to_2d(self, ip_list: list) : list
-        To split the list (both blacklist and whitelist) to its own arrays.
-    main(self) : None
-"""
 import argparse
 # To not show the inputted password when updating credentials
 import getpass
@@ -35,11 +20,24 @@ class Conf:
     MOUNT = 'Z:'  # Where NAS would be letter-mounted.
     NAS_ADDR = '\\\\vm-winsrv16-1\\shared'  # Location on where the blacklist.txt and whitelist.txt file is stored.
     SELF_IP1 = '10.1.0.121'  # BIG IP Self IP address for Box 1.
-    SELF_IP2 = ''  # BIG IP Self IP address for Box 2.
-    LIST_PREFIX = "addresslist"  # Prefix for the address lists' name.
+    # SELF_IP2 = ''  # BIG IP Self IP address for Box 2.
+    LIST_PREFIX = "addresslist"  # Prefix for the address lists.
 
 
 class Blacklist:
+    """
+        Automates updating address lists.
+        ...
+        Methods
+        -------
+        update_credentials(self, device: str, username: str = '', password: str = '') : None
+            Method to update the credentials in Credential Manager.
+        which_array(self, ip_address: str) : int
+            To decide which list the IP address goes to.
+        split_list_to_2d(self, ip_list: list) : list
+            To split the list (both blacklist and whitelist) to its own arrays.
+        main(self) : None
+    """
     # DO NOT EDIT
     CONST_BIGIP = 'BIG-IP'
     CONST_NAS = 'NAS'
