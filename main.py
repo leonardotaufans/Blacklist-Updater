@@ -17,11 +17,13 @@ class Conf:
     SYNC_GROUP_NAME = ""  # The sync-group name. If left blank, configuration sync will not be performed.
 
     ARRAY_AMOUNT = 16  # The amount of address list. Adjust if necessary
+    ARRAY_AMOUNT_V6 = 4  # The amount of address list for IPv6
     MOUNT = 'Z:'  # Where NAS would be letter-mounted.
     NAS_ADDR = '\\\\vm-winsrv16-1\\shared'  # Location on where the blacklist.txt and whitelist.txt file is stored.
     SELF_IP1 = '10.1.0.121'  # BIG IP Self IP address for Box 1.
     # SELF_IP2 = ''  # BIG IP Self IP address for Box 2.
     LIST_PREFIX = "addresslist"  # Prefix for the address lists.
+    LIST_PREFIX_V6 = "addresslist_v6"  # Prefix for IPv6 address lists
 
 
 class Blacklist:
@@ -126,8 +128,23 @@ class Blacklist:
         # Initialize 2D arrays
         arr_2d = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT)]
         for i in ip_list:
-            # Add the IP address to the correct 2D array.
-            arr_2d[self.which_array(ip_address=i)].append(i)
+            if i.find(":") == -1:
+                arr_2d[self.which_array(ip_address=i)].append(i)
+        return arr_2d
+
+    def split_list_to_2d_v6(self, ip_list: list) -> list:
+        """
+        Transform the list into a 2D array while splitting them by their first octet.
+        :param ip_list:
+            List of IP addresses that need to be separated.
+        :return:
+            2D arrays of IP addresses that has been separated.
+        """
+        # Initialize 2D arrays
+        arr_2d = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT)]
+        for i in ip_list:
+            if i.find(":") != -1:
+                arr_2d[self.which_array(ip_address=i)].append(i)
         return arr_2d
 
     def main(self) -> None:
@@ -159,11 +176,13 @@ class Blacklist:
             # Open the blacklist.txt and split them.
             with open(f"{Conf.MOUNT}\\blacklist.txt") as __:
                 blacklist = self.split_list_to_2d(ip_list=[_.rstrip() for _ in __])
+                blacklist_v6 = self.split_list_to_2d_v6(ip_list=[_.rstrip() for _ in __])
             # Open the whitelist.txt and split them.
-            with open(f"{Conf.MOUNT}\\whitelist.txt") as __:
+            with open(f"{Conf.MOUNT}\\removeblacklist.txt") as __:
                 whitelist = self.split_list_to_2d(ip_list=[_.rstrip() for _ in __])
+                whitelist_v6 = self.split_list_to_2d_v6(ip_list=[_.rstrip() for _ in __])
         except IOError as e:
-            print("Error: Reading latest blacklisted files failed. \n\nDetails:\n")
+            print("Error: Reading latest files failed. \n\nDetails:\n")
             print(e)
             exit(-1)
 
@@ -176,20 +195,35 @@ class Blacklist:
             print("Error: Authentication with BIG-IP failed. Please ensure your username/password are correct.")
             print(f"Error details: {e}")
             exit(-1)
+        # ssh.exec_command("tmsh")
         # List the address list to be checked later
         _, stdout, stderr = (ssh.exec_command(f"tmsh list net address-list address-lists | grep {Conf.LIST_PREFIX}"))
         list_addr = stdout.read().decode()
         # Add blacklisted IP
         for r in range(len(blacklist)):
             # If address list is not found
-            if list_addr.find(f"{Conf.LIST_PREFIX}-{r+1}") == -1:
+            if list_addr.find(f"{Conf.LIST_PREFIX}-{r + 1}") == -1:
                 _, stdout, stderr = (ssh.exec_command
                                      (f"tmsh create net address-list {Conf.LIST_PREFIX}-{r + 1} addresses add "
                                       f"{{ {' '.join(map(str, blacklist[r]))} }}"))
+                if stdout.read().decode():
+                    print(stdout.read().decode())
+                if stderr.read().decode():
+                    print(stderr.read().decode())
+                _, stdout, stderr = (ssh.exec_command
+                                     (f"tmsh create net address-list {Conf.LIST_PREFIX_V6}-{r + 1} addresses add "
+                                      f"{{ {' '.join(map(str, blacklist_v6[r]))} }}"))
             else:
                 _, stdout, stderr = (ssh.exec_command
-                                 (f"tmsh modify net address-list {Conf.LIST_PREFIX}-{r + 1} addresses add "
-                                  f"{{ {' '.join(map(str, blacklist[r]))} }}"))
+                                     (f"tmsh modify net address-list {Conf.LIST_PREFIX}-{r + 1} addresses add "
+                                      f"{{ {' '.join(map(str, blacklist[r]))} }}"))
+                if stdout.read().decode():
+                    print(stdout.read().decode())
+                if stderr.read().decode():
+                    print(stderr.read().decode())
+                _, stdout, stderr = (ssh.exec_command
+                                     (f"tmsh modify net address-list {Conf.LIST_PREFIX_V6}-{r + 1} addresses add "
+                                      f"{{ {' '.join(map(str, blacklist_v6[r]))} }}"))
             if stdout.read().decode():
                 print(stdout.read().decode())
             if stderr.read().decode():
@@ -203,9 +237,16 @@ class Blacklist:
                 print(stdout.read().decode())
             if stderr.read().decode():
                 print(stderr.read().decode())
+            _, stdout, stderr = (ssh.exec_command
+                                 (f"modify net address-list {Conf.LIST_PREFIX_V6}-{r + 1} addresses delete "
+                                  f"{{ {' '.join(map(str, whitelist_v6[r]))} }}"))
+            if stdout.read().decode():
+                print(stdout.read().decode())
+            if stderr.read().decode():
+                print(stderr.read().decode())
         # The BIG IP only syncs if sync-group name is entered.
         if not Conf.SYNC_GROUP_NAME:
-            ssh.exec_command(f"tmsh run /cm config-sync to-group {Conf.SYNC_GROUP_NAME}")
+            ssh.exec_command(f"run /cm config-sync to-group {Conf.SYNC_GROUP_NAME}")
         # close SSH session
         ssh.close()
 

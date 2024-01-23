@@ -6,7 +6,7 @@ name = "pypi"
 [packages]
 keyring = "~=24.3.0"
 numpy = "~=1.26.2"
-paramiko = "~=3.3.1"
+paramiko = "~=3.4.0"
 
 [dev-packages]
 
