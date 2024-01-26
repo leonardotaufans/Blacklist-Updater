@@ -15,11 +15,10 @@ class Conf:
     """
 
     SYNC_GROUP_NAME = ""  # The sync-group name. If left blank, configuration sync will not be performed.
-
     ARRAY_AMOUNT = 16  # The amount of address list. Adjust if necessary
     ARRAY_AMOUNT_V6 = 4  # The amount of address list for IPv6
     MOUNT = 'Z:'  # Where NAS would be letter-mounted.
-    NAS_ADDR = '\\\\vm-winsrv16-1\\shared'  # Location on where the blacklist.txt and whitelist.txt file is stored.
+    NAS_ADDR = '\\\\vm-winsrv16-1\\shared'  # Location on where the blacklist.txt and whitelist.txt file is stored."
     SELF_IP1 = '10.1.0.121'  # BIG IP Self IP address for Box 1.
     # SELF_IP2 = ''  # BIG IP Self IP address for Box 2.
     LIST_PREFIX = "addresslist"  # Prefix for the address lists.
@@ -37,14 +36,16 @@ class Blacklist:
         which_array(self, ip_address: str) : int
             To decide which list the IP address goes to.
         split_list_to_2d(self, ip_list: list) : list
-            To split the list (both blacklist and whitelist) to its own arrays.
+            To split the IPv4 list (both blacklist and whitelist) to its own arrays.
+        split_list_to_2d_v6(self, ip_list: list) : list
+            To split the IPv6 list (both blacklist and whitelist) to its own arrays.
+
         main(self) : None
     """
     # DO NOT EDIT
     CONST_BIGIP = 'BIG-IP'
     CONST_NAS = 'NAS'
 
-    # Initialize code, particularly for Argument Parser
     def __init__(self) -> None:
         """
         This is mostly used to initialize Argument Parser, enables other scripts to automate
@@ -92,6 +93,7 @@ class Blacklist:
             password = getpass.getpass(f"Enter {device} Password: \n")
         old_username = kr.get_password(f"{device}.username", "username")
 
+        # This ensures that only one user/password is saved in the server and prevent erratic behavior.
         if old_username is not None:
             kr.delete_password(f"{device}.username", username="username")
             kr.delete_password(f"{device}.password", username=old_username)
@@ -103,6 +105,7 @@ class Blacklist:
     def which_array(ip_address: str) -> int:
         """
         Get to which list does the IP address should go to.
+        Used by split_list_to_2d(self, ip_list)
         :param ip_address:
             IP address that needs to be separated.
         :return:
@@ -125,26 +128,25 @@ class Blacklist:
         :return:
             2D arrays of IP addresses that has been separated.
         """
-        # Initialize 2D arrays
-        arr_2d = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT)]
-        for i in ip_list:
-            if i.find(":") == -1:
-                arr_2d[self.which_array(ip_address=i)].append(i)
+        arr_2d = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT)]  # Initialize 2D arrays
+        for ip in ip_list:
+            if ip.find(":") == -1:  # If no colon is found, it's IPv4
+                arr_2d[self.which_array(ip_address=ip)].append(ip)
         return arr_2d
 
     def split_list_to_2d_v6(self, ip_list: list) -> list:
         """
         Transform the list into a 2D array while splitting them by their first octet.
+        Same code as above, only used for IPv6
         :param ip_list:
             List of IP addresses that need to be separated.
         :return:
             2D arrays of IP addresses that has been separated.
         """
-        # Initialize 2D arrays
-        arr_2d = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT)]
-        for i in ip_list:
-            if i.find(":") != -1:
-                arr_2d[self.which_array(ip_address=i)].append(i)
+        arr_2d = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT_V6)]  # Initialize 2D arrays
+        for ipv6 in ip_list:
+            if ipv6.find(":") != -1:  # If colon is found, it's IPv6
+                arr_2d[self.which_array(ip_address=ipv6)].append(ipv6)
         return arr_2d
 
     def main(self) -> None:
@@ -173,11 +175,11 @@ class Blacklist:
 
         # Get blacklist and whitelist file and split them to 2D array
         try:
-            # Open the blacklist.txt and split them.
+            # Open the blacklist file and split them.
             with open(f"{Conf.MOUNT}\\blacklist.txt") as __:
                 blacklist = self.split_list_to_2d(ip_list=[_.rstrip() for _ in __])
                 blacklist_v6 = self.split_list_to_2d_v6(ip_list=[_.rstrip() for _ in __])
-            # Open the whitelist.txt and split them.
+            # Open the whitelist file and split them.
             with open(f"{Conf.MOUNT}\\removeblacklist.txt") as __:
                 whitelist = self.split_list_to_2d(ip_list=[_.rstrip() for _ in __])
                 whitelist_v6 = self.split_list_to_2d_v6(ip_list=[_.rstrip() for _ in __])
@@ -195,48 +197,43 @@ class Blacklist:
             print("Error: Authentication with BIG-IP failed. Please ensure your username/password are correct.")
             print(f"Error details: {e}")
             exit(-1)
-        # ssh.exec_command("tmsh")
+        ssh.exec_command("tmsh")  # Get tmsh shell
+
         # List the address list to be checked later
-        _, stdout, stderr = (ssh.exec_command(f"tmsh list net address-list address-lists | grep {Conf.LIST_PREFIX}"))
+        _, stdout, stderr = (ssh.exec_command(f"list net address-list address-lists"))
         list_addr = stdout.read().decode()
         # Add blacklisted IP
         for r in range(len(blacklist)):
             # If address list is not found
             if list_addr.find(f"{Conf.LIST_PREFIX}-{r + 1}") == -1:
                 _, stdout, stderr = (ssh.exec_command
-                                     (f"tmsh create net address-list {Conf.LIST_PREFIX}-{r + 1} addresses add "
-                                      f"{{ {' '.join(map(str, blacklist[r]))} }}"))
-                if stdout.read().decode():
-                    print(stdout.read().decode())
-                if stderr.read().decode():
-                    print(stderr.read().decode())
+                                     (f"create net address-list {Conf.LIST_PREFIX}-{r + 1} addresses add "
+                                      f"{{ {' '.join(map(str, blacklist[r]))} }}", get_pty=True))
+                print(stdout.read().decode())
+                print(stderr.read().decode())
                 _, stdout, stderr = (ssh.exec_command
-                                     (f"tmsh create net address-list {Conf.LIST_PREFIX_V6}-{r + 1} addresses add "
+                                     (f"create net address-list {Conf.LIST_PREFIX_V6}-{r + 1} addresses add "
                                       f"{{ {' '.join(map(str, blacklist_v6[r]))} }}"))
+                print(stdout.read().decode())
+                print(stderr.read().decode())
             else:
                 _, stdout, stderr = (ssh.exec_command
-                                     (f"tmsh modify net address-list {Conf.LIST_PREFIX}-{r + 1} addresses add "
+                                     (f"modify net address-list {Conf.LIST_PREFIX}-{r + 1} addresses add "
                                       f"{{ {' '.join(map(str, blacklist[r]))} }}"))
-                if stdout.read().decode():
-                    print(stdout.read().decode())
-                if stderr.read().decode():
-                    print(stderr.read().decode())
-                _, stdout, stderr = (ssh.exec_command
-                                     (f"tmsh modify net address-list {Conf.LIST_PREFIX_V6}-{r + 1} addresses add "
-                                      f"{{ {' '.join(map(str, blacklist_v6[r]))} }}"))
-            if stdout.read().decode():
                 print(stdout.read().decode())
-            if stderr.read().decode():
                 print(stderr.read().decode())
+                _, stdout, stderr = (ssh.exec_command
+                                     (f"modify net address-list {Conf.LIST_PREFIX_V6}-{r + 1} addresses add "
+                                      f"{{ {' '.join(map(str, blacklist_v6[r]))} }}"))
+            print(stdout.read().decode())
+            print(stderr.read().decode())
         # Delete whitelisted IP
         for r in range(len(whitelist)):
             _, stdout, stderr = (ssh.exec_command
-                                 (f"tmsh modify net address-list {Conf.LIST_PREFIX}-{r + 1} addresses delete "
+                                 (f"modify net address-list {Conf.LIST_PREFIX}-{r + 1} addresses delete "
                                   f"{{ {' '.join(map(str, whitelist[r]))} }}"))
-            if stdout.read().decode():
-                print(stdout.read().decode())
-            if stderr.read().decode():
-                print(stderr.read().decode())
+            print(stdout.read().decode())
+            print(stderr.read().decode())
             _, stdout, stderr = (ssh.exec_command
                                  (f"modify net address-list {Conf.LIST_PREFIX_V6}-{r + 1} addresses delete "
                                   f"{{ {' '.join(map(str, whitelist_v6[r]))} }}"))
