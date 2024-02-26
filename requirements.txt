@@ -1,4 +1,4 @@
 keyring~=24.3.0
-numpy~=1.26.2
 paramiko~=3.4.0
-aiosmtpd~=1.4.4
+bigrest~=1.7.3
+numpy~=1.26.2
