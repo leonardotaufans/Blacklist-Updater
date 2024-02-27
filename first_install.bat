@@ -3,17 +3,15 @@ python --version 2>NUL
 if errorlevel 1 goto errorNoPython
 echo.
 echo  Installing prerequisites...
-pip install keyring numpy paramiko
+set pwd=%cd%
+pip install --no-index --find-links %cd% -r requirements.txt
 echo.
 echo  --------------------------------
-echo   Adding NAS credentials to Vault.
-python main.py --Update-Credentials NAS
-echo   Adding BIG-IP credentials to Vault. Please ensure that the user can be used to SSH.
+echo   Adding BIG-IP credentials to Vault. Please ensure that the user can be used to SSH and iControl.
 python main.py --Update-Credentials BIG-IP
 :: Todo create scheduler
 echo  --------------------------------
-echo   Creating scheduler...
-set pwd=%cd%
+echo   Creating scheduler for daily at 0:00...
 schtasks /create /sc daily /tn "BIG-IP Scheduler\Address List Updater" /tr "python %cd%\main.py" /st 00:00
 echo  --------------------------------
 echo   Installation complete.

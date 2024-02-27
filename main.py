@@ -111,7 +111,7 @@ class Blacklist:
                     dummy_ip = "233.252.0.255"
                 case _:
                     new_list_name = f"{Conf.LIST_PREFIX_V6}-{r + 1}"
-                    dummy_ip = "2001:db8::"
+                    dummy_ip = "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"
             # If address list is not found
             if not device.exist(f'/mgmt/tm/security/firewall/address-list/{new_list_name}'):
                 is_new_list = True
