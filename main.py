@@ -5,6 +5,7 @@ import datetime
 import getpass
 import math
 import re
+import socket
 import urllib.request
 import urllib.error
 import keyring as kr
@@ -156,7 +157,7 @@ class Blacklist:
             Password for said device. If the password is not entered, password will need to be manually
             typed in.
         """
-        print(f'Updating BIG-IP Credentials in Vault\n-------------------')
+        print(f'\u24d8 Updating BIG-IP Credentials in Vault\n-------------------')
         print(f'(This account requires access to SSH)')
         device = "BIG-IP"
         username = username
@@ -173,6 +174,7 @@ class Blacklist:
             kr.delete_password(f"{device}.password", username=old_username)
         kr.set_password(f"{device}.username", "username", username)
         kr.set_password(f"{device}.password", username, password)
+        print("\u2705 Update BIG-IP password complete.")
         exit()
 
     @staticmethod
@@ -250,14 +252,14 @@ class Blacklist:
     def main(self) -> None:
         print(f"\u24d8 Checking for credentials...")
         # Get BIG IP username & password
-        big_ip_username = kr.get_password(f"BIGIP.username", f"username")
-        big_ip_password = kr.get_password(f"BIGIP.password", big_ip_username)
+        big_ip_username = kr.get_password(f"BIG-IP.username", f"username")
+        big_ip_password = kr.get_password(f"BIG-IP.password", big_ip_username)
         if big_ip_username is None or big_ip_password is None:
             print('Username or password for BIG IP is not found. Ensure you have updated the username or \n'
                   'password and not delete them from the vault.')
             exit(-1)
 
-            # SSH to BIG IP
+        # SSH to BIG IP
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy)
         print(f"\u24d8 Starting SSH...")
@@ -266,6 +268,12 @@ class Blacklist:
         except paramiko.ssh_exception.AuthenticationException as e:
             print(f"\u274c Failed.")
             print("Error: Authentication with BIG-IP failed. Please ensure your username/password are correct.")
+            print(f"Error details: {e}")
+            exit(-1)
+        except socket.error as e:
+            print(f"\u274c Failed.")
+            print("Error: SSH with BIG-IP failed. Please ensure you are able to connect with BIG-IP "
+                  "and firewalls have been opened.")
             print(f"Error details: {e}")
             exit(-1)
         print(f"\u2705 SSH Success.")
