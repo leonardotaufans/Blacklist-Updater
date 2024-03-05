@@ -1,22 +1,19 @@
 import argparse
 import contextlib
-import datetime
-# To not show the inputted password when updating credentials
-import getpass
+import getpass  # To not show the inputted password when updating credentials
 import math
 import re
 import socket
-import urllib.request
-import urllib.error
+# from datetime import date
+from urllib import request as http_req
 import keyring as kr
-from keyring import errors as kr_err
 import numpy as np
 # For SSH
 import paramiko
 from bigrest.bigip import BIGIP
+# from keyring import errors as kr_err
 # For mail
-from datetime import date
-import smtplib
+# import smtplib
 
 
 class Conf:
@@ -32,51 +29,51 @@ class Conf:
     BLACKLIST_URL = "http://localhost:8000/blacklist.txt"  # Path for blacklist file
     WHITELIST_URL = "http://localhost:8000/whitelist.txt"  # Path for whitelist file
     # For email
-    EMAIL_RECEIVER = ["user@localhost.lab", "group@localhost.lab"]  # Email addresses who will receive the email
-    EMAIL_SUBJECT = "Automated Blacklist Update Report"
-    EMAIL_SMTP = {
-        "host": "127.0.0.1",  # SMTP address
-        "port": 8025  # SMTP port
-    }
+    # EMAIL_RECEIVER = ["user@localhost.lab", "group@localhost.lab"]  # Email addresses who will receive the email
+    # EMAIL_SUBJECT = "Automated Blacklist Update Report"
+    # EMAIL_SMTP = {
+    #     "host": "127.0.0.1",  # SMTP address
+    #     "port": 8025  # SMTP port
+    # }
 
 
-class Email:
-    subject, message = "", ""
-
-    def __init__(self, subject: str):
-        today = date.today().strftime("%B %d, %Y")
-        self.subject = subject
-        self.message += f"""
-        Automated Blacklist Update Report - {today}
-        {subject}
-        """
-
-    def msg_add(self, append_message: str) -> None:
-        self.message += '\n'.join(append_message)
-
-    def send_mail(self, error: str = ""):
-        self.message += '\n'.join("Execution completed.")
-        if error:
-            self.message += '\n'.join(error)
-        try:
-            user = kr.get_password("email.address", "email.address")
-            pw = kr.get_password("email.password", user)
-        except kr_err.KeyringError as e:
-            print(e)
-            exit(-1)
-
-        try:
-            mail = smtplib.SMTP(host=Conf.EMAIL_SMTP["host"], port=Conf.EMAIL_SMTP["port"])
-            mail.starttls()
-            mail.login(user=user, password=pw)
-            mail.sendmail(
-                from_addr=user,
-                to_addrs=Conf.EMAIL_RECEIVER,
-                msg=self.message
-            )
-        except smtplib.SMTPException as e:
-            print(e)
-            exit(-1)
+# class Email:
+#     subject, message = "", ""
+#
+#     def __init__(self, subject: str):
+#         today = date.today().strftime("%B %d, %Y")
+#         self.subject = subject
+#         self.message += f"""
+#         Automated Blacklist Update Report - {today}
+#         {subject}
+#         """
+#
+#     def msg_add(self, append_message: str) -> None:
+#         self.message += '\n'.join(append_message)
+#
+#     def send_mail(self, error: str = ""):
+#         self.message += '\n'.join("Execution completed.")
+#         if error:
+#             self.message += '\n'.join(error)
+#         try:
+#             user = kr.get_password("email.address", "email.address")
+#             pw = kr.get_password("email.password", user)
+#         except kr_err.KeyringError as e:
+#             print(e)
+#             exit(-1)
+#
+#         try:
+#             mail = smtplib.SMTP(host=Conf.EMAIL_SMTP["host"], port=Conf.EMAIL_SMTP["port"])
+#             mail.starttls()
+#             mail.login(user=user, password=pw)
+#             mail.sendmail(
+#                 from_addr=user,
+#                 to_addrs=Conf.EMAIL_RECEIVER,
+#                 msg=self.message
+#             )
+#         except smtplib.SMTPException as e:
+#             print(e)
+#             exit(-1)
 
 
 class Blacklist:
@@ -109,11 +106,11 @@ class Blacklist:
                                  help="Updates the email credentials. "
                                       "Optional Arguments: --Username [Email] --Password [Password]",
                                  default=None)
-        parent_args.add_argument("--Update-Mail-Credentials", "-cmail",
-                                 help="Updates the email credentials. "
-                                      "Optional Arguments: --Username [Email] --Password [Password]",
-                                 action="store_true",
-                                 default=None)
+        # parent_args.add_argument("--Update-Mail-Credentials", "-cmail",
+        #                          help="Updates the email credentials. "
+        #                               "Optional Arguments: --Username [Email] --Password [Password]",
+        #                          action="store_true",
+        #                          default=None)
         parent_args.add_argument("--Username", "-u",
                                  help="(Optional) Username (for updating credentials)", nargs='?',
                                  action="store", default="", required=False)
@@ -124,36 +121,36 @@ class Blacklist:
         if args.Update_F5_Credentials is not None:
             self.update_credentials(username=args.Username,
                                     password=args.Password)
-        if args.Update_Mail_Credentials is not None:
-            self.update_mail(username=args.Username,
-                             password=args.Password)
+        # if args.Update_Mail_Credentials is not None:
+        #     self.update_mail(username=args.Username,
+        #                      password=args.Password)
         # Running the main code. It's close to the very bottom of this class
         self.main()
 
-    @staticmethod
-    def update_mail(username: str = "", password: str = "") -> None:
-        print(f'Updating Email Address\n-------------------')
-        print(f'SMTP Server: {Conf.EMAIL_SMTP["host"]}:{Conf.EMAIL_SMTP["port"]}.')
-        print("If the SMTP Server above is incorrect, please update Conf class in this script.")
-        mail = Email(subject="Update Email Credentials")
-        username = username
-        if username == "":
-            username = input(f"Enter Email Address: \n")
-        password = password
-        if password == "":
-            password = getpass.getpass(f"{username} > Enter Password: \n")
-
-        # This ensures that only one user/password is saved in the server and prevent erratic behavior.
-        # old_username = kr.get_password(f"email.address", "email.address")
-        # if old_username is not None:
-        #    kr.delete_password("email.address", username="email.address")
-        #    kr.delete_password("email.password", username=old_username)
-        # kr.set_password("email.address", "email.address", username)
-        # kr.set_password("email.password", username, password)
-        mail.msg_add(f"\u2713 Updating Credentials for {username}")
-        print(f"\u2713 Updating Credentials for {username}")
-        # mail.send_mail()
-        exit()
+    # @staticmethod
+    # def update_mail(username: str = "", password: str = "") -> None:
+    #     print(f'Updating Email Address\n-------------------')
+    #     print(f'SMTP Server: {Conf.EMAIL_SMTP["host"]}:{Conf.EMAIL_SMTP["port"]}.')
+    #     print("If the SMTP Server above is incorrect, please update Conf class in this script.")
+    #     # mail = Email(subject="Update Email Credentials")
+    #     username = username
+    #     if username == "":
+    #         username = input(f"Enter Email Address: \n")
+    #     password = password
+    #     if password == "":
+    #         password = getpass.getpass(f"{username} > Enter Password: \n")
+    #
+    #     # This ensures that only one user/password is saved in the server and prevent erratic behavior.
+    #     # old_username = kr.get_password(f"email.address", "email.address")
+    #     # if old_username is not None:
+    #     #    kr.delete_password("email.address", username="email.address")
+    #     #    kr.delete_password("email.password", username=old_username)
+    #     # kr.set_password("email.address", "email.address", username)
+    #     # kr.set_password("email.password", username, password)
+    #     # mail.msg_add(f"\u2713 Updating Credentials for {username}")
+    #     print(f"\u2713 Updating Credentials for {username}")
+    #     # mail.send_mail()
+    #     exit()
 
     @staticmethod
     def update_credentials(username: str = '', password: str = '') -> None:
@@ -297,7 +294,7 @@ class Blacklist:
         blacklist_v6 = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT_V6)]
         # Accessing the URL to get blacklisted IP addresses
         print(f"\u24d8 Accessing {Conf.BLACKLIST_URL}...")
-        for line in urllib.request.urlopen(Conf.BLACKLIST_URL):
+        for line in http_req.urlopen(Conf.BLACKLIST_URL):
             ip_address = line.decode('utf-8').strip()
             split = re.split('[.:]', string=ip_address)
             # Check if this is an IPv6 address
@@ -314,7 +311,7 @@ class Blacklist:
         whitelist = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT)]
         whitelist_v6 = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT_V6)]
         print(f"\u24d8 Accessing {Conf.WHITELIST_URL}")
-        for line in urllib.request.urlopen(Conf.WHITELIST_URL):
+        for line in http_req.urlopen(Conf.WHITELIST_URL):
             ip_address = line.decode('utf-8').strip()
             split = re.split('[.:]', string=ip_address)
             # Check if this is an IPv6 address
