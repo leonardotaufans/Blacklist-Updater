@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import datetime
 # To not show the inputted password when updating credentials
 import getpass
 import math
@@ -7,26 +8,74 @@ import re
 import urllib.request
 import urllib.error
 import keyring as kr
+from keyring import errors as kr_err
 import numpy as np
 # For SSH
 import paramiko
 from bigrest.bigip import BIGIP
+# For mail
+from datetime import date
+import smtplib
 
 
 class Conf:
     """
     Configuration class. Please adjust these variables.
     """
-
     SYNC_GROUP_NAME = ""  # The sync-group name. If left blank, configuration sync will not be performed.
     ARRAY_AMOUNT = 16  # The amount of address list. Adjust if necessary
     ARRAY_AMOUNT_V6 = 4  # The amount of address list for IPv6
     SELF_IP1 = '10.1.0.122'  # BIG IP Self IP address for Box 1.
-    # SELF_IP2 = ''  # BIG IP Self IP address for Box 2.
     LIST_PREFIX = "address-list"  # Prefix for the address lists.
     LIST_PREFIX_V6 = "address-list_v6"  # Prefix for IPv6 address lists
     BLACKLIST_URL = "http://localhost:8000/blacklist.txt"  # Path for blacklist file
     WHITELIST_URL = "http://localhost:8000/whitelist.txt"  # Path for whitelist file
+    # For email
+    EMAIL_RECEIVER = ["user@localhost.lab", "group@localhost.lab"]  # Email addresses who will receive the email
+    EMAIL_SUBJECT = "Automated Blacklist Update Report"
+    EMAIL_SMTP = {
+        "host": "127.0.0.1",  # SMTP address
+        "port": 8025  # SMTP port
+    }
+
+
+class Email:
+    subject, message = "", ""
+
+    def __init__(self, subject: str):
+        today = date.today().strftime("%B %d, %Y")
+        self.subject = subject
+        self.message += f"""
+        Automated Blacklist Update Report - {today}
+        {subject}
+        """
+
+    def msg_add(self, append_message: str) -> None:
+        self.message += '\n'.join(append_message)
+
+    def send_mail(self, error: str = ""):
+        self.message += '\n'.join("Execution completed.")
+        if error:
+            self.message += '\n'.join(error)
+        try:
+            user = kr.get_password("email.address", "email.address")
+            pw = kr.get_password("email.password", user)
+        except kr_err.KeyringError as e:
+            print(e)
+            exit(-1)
+
+        try:
+            mail = smtplib.SMTP(host=Conf.EMAIL_SMTP["host"], port=Conf.EMAIL_SMTP["port"])
+            mail.starttls()
+            mail.login(user=user, password=pw)
+            mail.sendmail(
+                from_addr=user,
+                to_addrs=Conf.EMAIL_RECEIVER,
+                msg=self.message
+            )
+        except smtplib.SMTPException as e:
+            print(e)
+            exit(-1)
 
 
 class Blacklist:
@@ -46,8 +95,6 @@ class Blacklist:
 
         main(self) : None
     """
-    # DO NOT EDIT
-    CONST_BIGIP = 'BIG-IP'
 
     def __init__(self) -> None:
         """
@@ -55,19 +102,47 @@ class Blacklist:
         whenever there is a need to update the username/password.
         """
         # Argument Parser
-        parent_args = argparse.ArgumentParser()
-        parent_args.add_argument("--Update-Credentials", "-c",
-                                 action="store")
+        parent_args = argparse.ArgumentParser(add_help=False)
+        parent_args.add_argument("--Update-F5-Credentials", "-cf5",
+                                 action="store_true", default=None)
+        parent_args.add_argument("--Update-Mail-Credentials", "-cmail", action="store_true", default=None)
         parent_args.add_argument("--Username", "-u", help="Username (for updating credentials)", nargs='?',
-                                 action="store", default="")
+                                 action="store", default="", required=False)
         parent_args.add_argument("--Password", "-p", help="Password (for updating credentials)", nargs='?',
-                                 action="store", default="")
+                                 action="store", default="", required=False)
         args = parent_args.parse_args()
-        if args.Update_Credentials is not None:
+        if args.Update_F5_Credentials is not None:
             self.update_credentials(username=args.Username,
                                     password=args.Password)
+        if args.Update_Mail_Credentials is not None:
+            self.update_mail(username=args.Username, password=args.Password)
         # Running the main code. It's close to the very bottom of this class
         self.main()
+
+    @staticmethod
+    def update_mail(username: str = "", password: str = "") -> None:
+        print(f'Updating Email Address\n-------------------')
+        print(f'SMTP Server: {Conf.EMAIL_SMTP["host"]}:{Conf.EMAIL_SMTP["port"]}.')
+        print("If the SMTP Server above is incorrect, please update Conf class in this script.")
+        mail = Email(subject="Update Email Credentials")
+        username = username
+        if username == "":
+            username = input(f"Enter Email Address: \n")
+        password = password
+        if password == "":
+            password = getpass.getpass(f"{username} > Enter Password: \n")
+
+        # This ensures that only one user/password is saved in the server and prevent erratic behavior.
+        # old_username = kr.get_password(f"email.address", "email.address")
+        # if old_username is not None:
+        #    kr.delete_password("email.address", username="email.address")
+        #    kr.delete_password("email.password", username=old_username)
+        # kr.set_password("email.address", "email.address", username)
+        # kr.set_password("email.password", username, password)
+        mail.msg_add(f"\u2713 Updating Credentials for {username}")
+        print(f"\u2713 Updating Credentials for {username}")
+        # mail.send_mail()
+        exit()
 
     @staticmethod
     def update_credentials(username: str = '', password: str = '') -> None:
@@ -90,9 +165,9 @@ class Blacklist:
         password = password
         if password == "":
             password = getpass.getpass(f"Enter {device} Password: \n")
-        old_username = kr.get_password(f"{device}.username", "username")
 
         # This ensures that only one user/password is saved in the server and prevent erratic behavior.
+        old_username = kr.get_password(f"{device}.username", "username")
         if old_username is not None:
             kr.delete_password(f"{device}.username", username="username")
             kr.delete_password(f"{device}.password", username=old_username)
@@ -175,8 +250,8 @@ class Blacklist:
     def main(self) -> None:
         print(f"\u24d8 Checking for credentials...")
         # Get BIG IP username & password
-        big_ip_username = kr.get_password(f"{self.CONST_BIGIP}.username", f"username")
-        big_ip_password = kr.get_password(f"{self.CONST_BIGIP}.password", big_ip_username)
+        big_ip_username = kr.get_password(f"BIGIP.username", f"username")
+        big_ip_password = kr.get_password(f"BIGIP.password", big_ip_username)
         if big_ip_username is None or big_ip_password is None:
             print('Username or password for BIG IP is not found. Ensure you have updated the username or \n'
                   'password and not delete them from the vault.')

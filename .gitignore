@@ -1,2 +1,5 @@
 /test_script.py
 *.whl
+*.crt
+*.csr
+*.key
