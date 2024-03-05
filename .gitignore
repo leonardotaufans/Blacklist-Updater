@@ -3,3 +3,7 @@
 *.crt
 *.csr
 *.key
+*.sh
+Pipfile
+Pipfile.lock
+venv

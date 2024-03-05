@@ -103,20 +103,30 @@ class Blacklist:
         whenever there is a need to update the username/password.
         """
         # Argument Parser
-        parent_args = argparse.ArgumentParser(add_help=False)
+        parent_args = argparse.ArgumentParser(description="Automates updating AFM blacklist.")
         parent_args.add_argument("--Update-F5-Credentials", "-cf5",
-                                 action="store_true", default=None)
-        parent_args.add_argument("--Update-Mail-Credentials", "-cmail", action="store_true", default=None)
-        parent_args.add_argument("--Username", "-u", help="Username (for updating credentials)", nargs='?',
+                                 action="store_true",
+                                 help="Updates the email credentials. "
+                                      "Optional Arguments: --Username [Email] --Password [Password]",
+                                 default=None)
+        parent_args.add_argument("--Update-Mail-Credentials", "-cmail",
+                                 help="Updates the email credentials. "
+                                      "Optional Arguments: --Username [Email] --Password [Password]",
+                                 action="store_true",
+                                 default=None)
+        parent_args.add_argument("--Username", "-u",
+                                 help="(Optional) Username (for updating credentials)", nargs='?',
                                  action="store", default="", required=False)
-        parent_args.add_argument("--Password", "-p", help="Password (for updating credentials)", nargs='?',
+        parent_args.add_argument("--Password", "-p",
+                                 help="(Optional) Password (for updating credentials)", nargs='?',
                                  action="store", default="", required=False)
         args = parent_args.parse_args()
         if args.Update_F5_Credentials is not None:
             self.update_credentials(username=args.Username,
                                     password=args.Password)
         if args.Update_Mail_Credentials is not None:
-            self.update_mail(username=args.Username, password=args.Password)
+            self.update_mail(username=args.Username,
+                             password=args.Password)
         # Running the main code. It's close to the very bottom of this class
         self.main()
 
@@ -265,6 +275,8 @@ class Blacklist:
         print(f"\u24d8 Starting SSH...")
         try:
             ssh.connect(hostname=Conf.SELF_IP1, username=big_ip_username, password=big_ip_password)
+        except KeyboardInterrupt:
+            exit()
         except paramiko.ssh_exception.AuthenticationException as e:
             print(f"\u274c Failed.")
             print("Error: Authentication with BIG-IP failed. Please ensure your username/password are correct.")
@@ -277,11 +289,14 @@ class Blacklist:
             print(f"Error details: {e}")
             exit(-1)
         print(f"\u2705 SSH Success.")
-        # Get blacklist and put them to AFM
+        print(f"\u24d8 Logging in to BIG-IP through iControl...")
+        device = BIGIP(device=Conf.SELF_IP1, session_verify=False, username=big_ip_username, password=big_ip_password)
+
+        # Getting blacklisted address
         blacklist = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT)]
         blacklist_v6 = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT_V6)]
+        # Accessing the URL to get blacklisted IP addresses
         print(f"\u24d8 Accessing {Conf.BLACKLIST_URL}...")
-
         for line in urllib.request.urlopen(Conf.BLACKLIST_URL):
             ip_address = line.decode('utf-8').strip()
             split = re.split('[.:]', string=ip_address)
@@ -292,8 +307,6 @@ class Blacklist:
             else:  # IPv4
                 array_location = (int(split[0]) % Conf.ARRAY_AMOUNT)
                 blacklist[array_location].append(ip_address)
-        print(f"\u24d8 Logging in to BIG-IP...")
-        device = BIGIP(device=Conf.SELF_IP1, session_verify=False, username=big_ip_username, password=big_ip_password)
         self.blacklist(ssh=ssh, device=device, addr_list=blacklist, destination=4)
         self.blacklist(ssh=ssh, device=device, addr_list=blacklist_v6, destination=6)
 
