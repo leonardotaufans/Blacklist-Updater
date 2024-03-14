@@ -1,4 +1,6 @@
+bigrest==1.7.3
+keyring==24.3.0
+numpy==1.26.4
+paramiko==3.4.0
 keyring~=24.3.0
-paramiko~=3.4.0
-bigrest~=1.7.3
-numpy~=1.26.2
+
