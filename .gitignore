@@ -7,3 +7,4 @@
 Pipfile
 Pipfile.lock
 venv
+/test_2.py
