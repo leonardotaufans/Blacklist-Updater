@@ -19,8 +19,8 @@ from bigrest.bigip import BIGIP
 # Constant Values for this script
 bigip_username = "BIG-IP.username"
 bigip_password = "BIG-IP.password"
-mail_username = "email.address"
-mail_password = "email.password"
+mail_username = "BIG-IP.address"
+mail_password = "BIG-IP.password"
 
 
 class Conf:
@@ -40,6 +40,7 @@ class Conf:
     EMAIL_SUBJECT = "Automated Blacklist Update Report"
     EMAIL_SMTP = {
         "host": "10.10.10.113",  # SMTP address
+        "address": "localhost.lab",
         "port": 25  # SMTP port
     }
 
@@ -52,8 +53,14 @@ class Email:
     def __init__(self, subject=""):
         today = date.today().strftime("%B %d, %Y")
         try:
-            user = kr.get_password(mail_username, mail_username)
+            _ = kr.get_password(bigip_username, "username")
+            user = f"{_}@{Conf.EMAIL_SMTP["address"]}"
+            mail = smtplib.SMTP(host=Conf.EMAIL_SMTP["host"], port=Conf.EMAIL_SMTP["port"])
+            mail.ehlo()
         except kr_e.KeyringError as e:
+            print(e)
+            exit(-1)
+        except smtplib.SMTPException as e:
             print(e)
             exit(-1)
 
@@ -70,8 +77,9 @@ class Email:
 
     def send_mail(self, error: str = ""):
         try:
-            user = kr.get_password(mail_username, mail_username)
-            pw = kr.get_password(mail_password, user)
+            _ = kr.get_password(bigip_username, "username")
+            user = f"{_}@{Conf.EMAIL_SMTP["address"]}"
+            pw = kr.get_password(bigip_password, _)
         except kr_e.KeyringError as e:
             print(e)
             exit(-1)
