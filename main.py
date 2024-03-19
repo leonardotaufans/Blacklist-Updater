@@ -46,6 +46,16 @@ class Conf:
 
 
 class Email:
+    """Class used for handling the preparing and delivering emails.
+
+    ...
+    Methods
+    -----
+    msg_add(self, append_message: str = "") -> None
+        Adds information to the message body into a new line.
+    send_mail(self, error: str = "") : None
+        Sends the mail. If error is found, it will also append the error message.
+    """
     user, pw = "", ""
     data = ""
     mes = EmailMessage()
@@ -73,9 +83,22 @@ class Email:
         self.data += f"""Automated Blacklist Update Report - {today}:\n{subject}"""
 
     def msg_add(self, append_message: str = "") -> None:
+        """
+        Appends new information to the message body.
+        :param append_message: Message to be added.
+        :type append_message: str
+        """
         self.data += f"""{append_message}\n"""
+        print(f"{append_message}")
 
-    def send_mail(self, error: str = ""):
+    def send_mail(self, error: str = "") -> None:
+        """
+        Sends the email.
+        :param error: Error message if any. Default is empty ("")
+        :type error: str
+        :except KeyringError: if username/password can't be fetched.
+        :except SMTPError: if SMTP server can't be reached.
+        """
         try:
             _ = kr.get_password(bigip_username, "username")
             user = f"{_}@{Conf.EMAIL_SMTP["address"]}"
@@ -102,6 +125,8 @@ class Email:
 
 
 class RunError(Exception):
+    """This exception will be raised if there is any issues during this run."""
+
     def __init__(self, message, errors):
         super().__init__(message)
         msg = Email()
@@ -117,15 +142,10 @@ class Blacklist:
         ...
         Methods
         -------
-        update_credentials(self, device: str, username: str = '', password: str = '') : None
+        update_credentials(username: str = '', password: str = '') : None
             Method to update the credentials in Credential Manager.
-        which_array(self, ip_address: str) : int
-            To decide which list the IP address goes to.
-        split_list_to_2d(self, ip_list: list) : list
-            To split the IPv4 list (both blacklist and whitelist) to its own arrays.
-        split_list_to_2d_v6(self, ip_list: list) : list
-            To split the IPv6 list (both blacklist and whitelist) to its own arrays.
-
+        blacklist(ssh: paramiko.SSHClient, device: BIGIP, address_list: list, destination: int, mail: Email) : None
+        whitelist(ssh: paramiko.SSHClient, device: BIGIP, address_list: list, destination: int, mail: Email) : None
         main(self) : None
     """
 
@@ -141,11 +161,6 @@ class Blacklist:
                                  help="Updates the email credentials. "
                                       "Optional Arguments: --Username [Email] --Password [Password]",
                                  default=None)
-        parent_args.add_argument("--Update-Mail-Credentials", "-cmail",
-                                 help="Updates the email credentials. "
-                                      "Optional Arguments: --Username [Email] --Password [Password]",
-                                 action="store_true",
-                                 default=None)
         parent_args.add_argument("--Username", "-u",
                                  help="(Optional) Username (for updating credentials)", nargs='?',
                                  action="store", default="", required=False)
@@ -156,36 +171,8 @@ class Blacklist:
         if args.Update_F5_Credentials is not None:
             self.update_credentials(username=args.Username,
                                     password=args.Password)
-        if args.Update_Mail_Credentials is not None:
-            self.update_mail(username=args.Username,
-                             password=args.Password)
         # Running the main code. It's close to the very bottom of this class
         self.main()
-
-    @staticmethod
-    def update_mail(username: str = "", password: str = "") -> None:
-        print(f'Updating Email Address\n-------------------')
-        print(f'SMTP Server: {Conf.EMAIL_SMTP["host"]}:{Conf.EMAIL_SMTP["port"]}.')
-        print("If the SMTP Server above is incorrect, please update Conf class in this script.")
-        username = username
-        if username == "":
-            username = input(f"Enter Email Address: \n")
-        password = password
-        if password == "":
-            password = getpass.getpass(f"{username} > Enter Password: \n")
-
-        # This ensures that only one user/password is saved in the server and prevent erratic behavior.
-        old_username = kr.get_password(mail_username, mail_username)
-        if old_username is not None:
-            kr.delete_password(mail_username, username=mail_username)
-            kr.delete_password(mail_password, username=old_username)
-        kr.set_password(mail_username, mail_username, username)
-        kr.set_password(mail_password, username, password)
-        mail = Email(subject='Update Email Credentials')
-        mail.msg_add(f"\u2713 Updating Credentials for {username} have been completed.")
-        mail.send_mail()
-        print(f"\u2713 Updating Credentials for {username}")
-        exit()
 
     @staticmethod
     def update_credentials(username: str = '', password: str = '') -> None:
@@ -198,6 +185,7 @@ class Blacklist:
         :param password: str
             Password for said device. If the password is not entered, password will need to be manually
             typed in.
+        :returns: None
         """
         print(f'\u24d8 Updating F5 Credentials in Vault\n-------------------')
         print(f'(This account requires access to SSH)')
@@ -217,12 +205,33 @@ class Blacklist:
         kr.set_password(f"BIG-IP.password", username, password)
         mail = Email("Update F5 Credentials")
         mail.msg_add(f"Update F5 Credentials complete.\nUsername: {username}.")
-        print("\u2705 Update BIG-IP password complete.")
         exit()
 
     @staticmethod
-    def blacklist(ssh: paramiko.SSHClient, device: BIGIP, addr_list: list, destination: int, mail: Email):
-        # Add blacklisted IP
+    def blacklist(ssh: paramiko.SSHClient, device: BIGIP,
+                  addr_list: list, destination: int, mail: Email) -> None:
+        """
+        Prepares the IP addresses to be blacklisted. This will split the IP address into chunks that
+        can be easily processed, ensure that it doesn't have any duplicates, and further split them for
+        bigger push.
+        :param ssh:
+            SSH Client used to access F5 device
+        :type ssh: SSHClient
+        :param device:
+            F5 BIG-IP iControl to get the current address lists
+        :type device: BIGIP
+        :param addr_list:
+            Lists of IP addresses that need to be split
+        :type addr_list: list
+        :param destination:
+            Which IP version this list is for (IPv4 or IPv6)
+        :type destination: int
+        :param mail:
+            Initialized email class
+        :type mail: Email
+        :returns: None
+        """
+        # Add blacklisted IP to separate lists
         for r in range(len(addr_list)):
             new_list = addr_list[r]
             match destination:
@@ -234,14 +243,14 @@ class Blacklist:
                     dummy_ip = "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"
             # If address list is not found
             if not device.exist(f'/mgmt/tm/security/firewall/address-list/{new_list_name}'):
-                is_new_list = True
-                print(f'\u24d8 Creating new address lists as {new_list_name}...')
+                mail.msg_add(f'\u24d8 Creating new address lists as {new_list_name}...')
                 _, stdout, stderr = (ssh.exec_command
                                      (f"create net address-list {new_list_name} addresses add "
                                       f"{{ {dummy_ip} }}"))
                 print(stdout.read().decode())
                 print(stderr.read().decode())
             else:
+                # If found, this address list will be checked for any duplicates
                 curr = \
                     device.load(
                         f'/mgmt/tm/security/firewall/address-list/{new_list_name}?$select=addresses').properties[
@@ -252,8 +261,8 @@ class Blacklist:
                 new_list = list(set(addr_list[r]) - set(old_list))
                 if len(new_list) == 0:
                     mail.msg_add(f"\u24d8 There are no new IP addresses for {new_list_name}.")
-                    print(f"\u24d8 There are no new IP addresses for {new_list_name}.")
                     continue
+            # Split further to 1000 IPs to reduce performance impact
             with contextlib.suppress(ValueError):
                 split_list = np.array_split(new_list, math.ceil(len(new_list) / 1000))
                 print(f'\u24d8 Adding new IP address to {new_list_name}...')
@@ -265,10 +274,9 @@ class Blacklist:
                     if exit_status == 0:
                         mail.msg_add(
                             f"\u2705 {new_list_name}: Blacklisting of IPs success ({i + 1}/{len(split_list)}).")
-                        print(f"\u2705 Success ({i + 1}/{len(split_list)}).")
+
                     else:
                         mail.msg_add(f"\u274c {new_list_name}: Blacklisting of IPs failed ({i + 1}/{len(split_list)}).")
-                        print(f"\u274c Failed ({i + 1}/{len(split_list)}).")
                         print(stdout.read().decode().strip())
                         print(stderr.read().decode().strip())
 
@@ -276,6 +284,8 @@ class Blacklist:
     def whitelist(ssh: paramiko.SSHClient, addr_list: list, destination: int, mail: Email) -> None:
         for r in range(len(addr_list)):
             with contextlib.suppress(ValueError):
+                # todo: Test if whitelisting would mess up if one of them are not found
+                # cause if so, there will be a need to verify the IP address existence
                 whitelisting = addr_list[r]
                 split_list = np.array_split(whitelisting, math.ceil(len(whitelisting) / 1000))
                 match destination:
@@ -283,7 +293,6 @@ class Blacklist:
                         new_list_name = f"{Conf.LIST_PREFIX}-{r + 1}"
                     case _:
                         new_list_name = f"{Conf.LIST_PREFIX_V6}-{r + 1}"
-                print(f'\u24d8 Removing IP address from {new_list_name}...')
                 mail.msg_add(f'\u24d8 Removing IP address from {new_list_name}...')
                 for i in range(len(split_list)):
                     _, stdout, stderr = (ssh.exec_command
@@ -293,12 +302,10 @@ class Blacklist:
                     if exit_status == 0:
                         mail.msg_add(
                             f"  \u2705 {new_list_name} ({i + 1}/{len(split_list)}): Whitelisting of IPs success.")
-                        print(f"\u2705 Success ({i + 1}/{len(split_list)}).")
                     else:
                         mail.msg_add(
                             f"  \u274c {new_list_name} ({i + 1}/{len(split_list)}): Whitelisting of IPs failed.")
                         mail.msg_add(stderr.read().decode().strip())
-                        print(f"\u274c Failed ({i + 1}/{len(split_list)}).")
                         print(stdout.read().decode().strip())
                         print(stderr.read().decode().strip())
 
@@ -306,11 +313,9 @@ class Blacklist:
         mail = Email()
         print(f"\u24d8 Checking for credentials...")
         # Get BIG IP username & password
-        big_ip_username = kr.get_password(f"BIG-IP.username", f"username")
+        big_ip_username = kr.get_password(f"BIG-IP.username", "username")
         big_ip_password = kr.get_password(f"BIG-IP.password", big_ip_username)
         if big_ip_username is None or big_ip_password is None:
-            print('Username or password for BIG IP is not found. Ensure you have updated the username or \n'
-                  'password and not delete them from the vault.')
             raise RunError(
                 "\u274c Username or password for BIG IP is not found. Ensure you have updated the username or \n"
                 "password and not delete them from the vault.", "Authentication Failed")
@@ -320,21 +325,16 @@ class Blacklist:
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy)
         print(f"\u24d8 Starting SSH...")
         try:
-            ssh.connect(hostname=Conf.SELF_IP1, username="admin", password="Kanya3101")
+            ssh.connect(hostname=Conf.SELF_IP1, username=big_ip_username, password=big_ip_password)
         except KeyboardInterrupt:
             exit()
         except paramiko.ssh_exception.AuthenticationException as e:
             print(f"\u274c Failed.")
-            print("Error: Authentication with BIG-IP failed. Please ensure your username/password are correct.")
-            print(f"Error details: {e}")
             raise RunError(
                 message=f"\u274c Authentication with BIG-IP failed. Please ensure your username/password are correct."
                         f"Details: {e}", errors=e)
         except socket.error as e:
             print(f"\u274c Failed.")
-            print("Error: SSH with BIG-IP failed. Please ensure you are able to connect with BIG-IP "
-                  "and firewalls have been opened.")
-            print(f"Error details: {e}")
             raise RunError(
                 message="\u274c Error: SSH with BIG-IP failed. Please ensure you are able to connect with BIG-IP and "
                         "firewalls have been opened."
@@ -383,10 +383,11 @@ class Blacklist:
         self.whitelist(ssh=ssh, addr_list=whitelist, destination=4, mail=mail)
         self.whitelist(ssh=ssh, addr_list=whitelist_v6, destination=6, mail=mail)
 
-        # The BIG IP only syncs if sync-group name is entered.
+        # The BIG IP will only be synced if sync-group name is entered.
         if Conf.SYNC_GROUP_NAME:
             print(f"\u24d8 Syncing HA device...")
             ssh.exec_command(f"run /cm config-sync to-group {Conf.SYNC_GROUP_NAME}")
+            mail.msg_add(f"\u2705 Syncing HA device {Conf.SYNC_GROUP_NAME} has been completed.")
         # close SSH session
         print(f"\u2705 AFM Address List update has been completed.")
         mail.send_mail()
