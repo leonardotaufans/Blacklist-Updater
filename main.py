@@ -30,17 +30,20 @@ class Conf:
     SYNC_GROUP_NAME = ""  # The sync-group name. If left blank, configuration sync will not be performed.
     ARRAY_AMOUNT = 16  # The amount of address list. Adjust if necessary
     ARRAY_AMOUNT_V6 = 4  # The amount of address list for IPv6
-    SELF_IP1 = '10.10.10.199'  # BIG IP Self IP address for Box 1.
+    SELF_IP1 = '10.10.10.122'  # BIG IP Self IP address for Box 1.
     LIST_PREFIX = "address-list"  # Prefix for the address lists.
     LIST_PREFIX_V6 = "address-list_v6"  # Prefix for IPv6 address lists
     BLACKLIST_URL = "http://10.10.10.113:8000/blacklist.txt"  # Path for blacklist file
     WHITELIST_URL = "http://10.10.10.113:8000/whitelist.txt"  # Path for whitelist file
     # For email
-    EMAIL_RECEIVER = ["<user@localhost.lab>", "<group@localhost.lab>"]  # Email addresses who will receive the email
+    EMAIL_RECEIVER = ["<security@sp.edu.sg>",
+                      "<INDT-InfraFM-Vendor-NW-Staff@sp.edu.sg>",
+                      "<INDT-InfraFM-Vendor-Mgr@sp.edu.sg>",
+                      "<noc@sp.edu.sg>"]  # Email addresses who will receive the email
     EMAIL_SUBJECT = "Automated Blacklist Update Report"
     EMAIL_SMTP = {
-        "host": "10.10.10.113",  # SMTP address
-        "address": "localhost.lab",
+        "host": "smtp.sp.edu.sg",  # SMTP address
+        "address": "sp.edu.sg",
         "port": 25  # SMTP port
     }
 
@@ -64,7 +67,7 @@ class Email:
         today = date.today().strftime("%B %d, %Y")
         try:
             _ = kr.get_password(bigip_username, "username")
-            user = f"{_}@{Conf.EMAIL_SMTP["address"]}"
+            user = f"{_}@{Conf.EMAIL_SMTP['address']}"
             mail = smtplib.SMTP(host=Conf.EMAIL_SMTP["host"], port=Conf.EMAIL_SMTP["port"])
             mail.ehlo()
         except kr_e.KeyringError as e:
@@ -101,7 +104,7 @@ class Email:
         """
         try:
             _ = kr.get_password(bigip_username, "username")
-            user = f"{_}@{Conf.EMAIL_SMTP["address"]}"
+            user = f"{_}@{Conf.EMAIL_SMTP['address']}"
             pw = kr.get_password(bigip_password, _)
         except kr_e.KeyringError as e:
             print(e)
