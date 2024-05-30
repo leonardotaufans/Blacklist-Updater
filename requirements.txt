@@ -3,4 +3,4 @@ keyring==24.3.0
 numpy==1.26.4
 paramiko==3.4.0
 keyring~=24.3.0
-
+requests~=2.32.2
