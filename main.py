@@ -2,22 +2,20 @@ import argparse
 import contextlib
 import getpass  # To not show the inputted password when updating credentials
 import math
-import os
 import re
 # For mail
 import smtplib
-import ssl
 import socket
-import subprocess
-import urllib.request
 from datetime import date
 from email.message import EmailMessage
 from urllib import request as http_req
+
 import keyring as kr
 import keyring.errors as kr_e
 import numpy as np
 # For SSH
 import paramiko
+import requests.exceptions
 from bigrest.bigip import BIGIP
 
 # Constant Values for this script
@@ -29,42 +27,49 @@ mail_password = "BIG-IP.password"
 
 class Conf:
     """
-    Configuration class. Please adjust these variables.
+    Configuration class. Please adjust these variables as needed.
     """
     SYNC_GROUP_NAME = ""  # The sync-group name. If left blank, configuration sync will not be performed.
     ARRAY_AMOUNT = 16  # The amount of address list. Adjust if necessary
     ARRAY_AMOUNT_V6 = 4  # The amount of address list for IPv6
     SELF_IP1 = '10.1.0.122'  # BIG IP Self IP address for Box 1.
+    SELF_IP2 = '10.1.0.123'  # BIG IP Self IP address for Box 2.
     LIST_PREFIX = "security_blacklist"  # Prefix for the address lists.
     LIST_PREFIX_V6 = "v6_security_blacklist"  # Prefix for IPv6 address lists
-    BLACKLIST_URL = "http://10.10.10.104:8000/blacklist.txt"  # Path for blacklist file
-    WHITELIST_URL = "http://10.10.10.104:8000/removeblacklist.txt"  # Path for whitelist file
-    # MOUNT_LETTER = "Z:"
-    # NAS_ADDRESS = "\\\\LEON-PC\\shared"
+    BLACKLIST_URL = "http://10.10.10.11:8000/blacklist.txt"  # Path for blacklist file
     # For email
     EMAIL_RECEIVER = ["<security@sp.edu.sg>",
                       "<INDT-InfraFM-Vendor-NW-Staff@sp.edu.sg>",
                       "<INDT-InfraFM-Vendor-Mgr@sp.edu.sg>",
                       "<noc@sp.edu.sg>"]  # Email addresses who will receive the email
-    EMAIL_SUBJECT = "Automated Blacklist Update Report"
-    EMAIL_SMTP = {
-        # "host": "smtp.sp.edu.sg",  # SMTP address
-        "host": "localhost",
-        "address": "sp.edu.sg",
-        # "port": 25  # SMTP port
-        "port": 25
-    }
+    EMAIL_SUBJECT = "Automated Blacklist Update Report"  # Subject of the email (will be appended with date)
+    SEND_EMAIL = True  # This will enable/disable email delivery
+    VERBOSE = False  # This will enable/disable full logging
+    EMAIL_SMTP = {"host": "localhost", "address": "sp.edu.sg", "port": 25}  # For debugging only todo:
+    # EMAIL_SMTP = {"host": "smtp.sp.edu.sg", "address": "sp.edu.sg", "port": 25}  # SMTP address
+    MESSAGE_BODY = \
+        """
+        <h1>Automated Blacklist Update Report</h1>\n
+        Date: {date}
+        Requested action has been completed.
+        """  # If there is a template needed for the email
 
 
 class Email:
     """Class used for handling the preparing and delivering emails.
 
-    ...
     Methods
+
     -----
-    msg_add(self, append_message: str = "") -> None
-        Adds information to the message body into a new line.
-    send_mail(self, error: str = "") : None
+
+    -- __init__(self, subject: str="") -> None
+        Initialize the email class
+    -- update_number_of_ip(self, ip_added: int, ip_removed: int) -> None
+        Adds information about the numbers of IP added and removed.
+    -- msg_add(self, append_message: str = "", error: int = 0) -> None
+        Adds information to the message body into a new line. If error is found in the script,
+        it will be logged as an error.
+    -- send_mail(self, error: str = "") : None
         Sends the mail. If error is found, it will also append the error message.
     """
     user, pw = "", ""
@@ -72,83 +77,122 @@ class Email:
     mes = EmailMessage()
     error = 0
     today = date.today().strftime("%B %d, %Y")
+    ip_added = -1
+    ip_removed = -1
+    subject = ""
 
     def __init__(self, subject=""):
-        try:
-            _ = kr.get_password(bigip_username, "username")
-            user = f"{_}@{Conf.EMAIL_SMTP['address']}"
-            mail = smtplib.SMTP(host=Conf.EMAIL_SMTP["host"], port=Conf.EMAIL_SMTP["port"])
-            # mail.starttls()
-            mail.connect(Conf.EMAIL_SMTP["host"], Conf.EMAIL_SMTP["port"])
-            mail.ehlo()
-        except kr_e.KeyringError as e:
-            print(e)
-            exit(-1)
-        except smtplib.SMTPException as e:
-            print(e)
-            exit(-1)
+        _ = kr.get_password(bigip_username, "username")
+        user = f"{_}@{Conf.EMAIL_SMTP['address']}"
+        if Conf.SEND_EMAIL:
+            try:
+                mail = smtplib.SMTP(host=Conf.EMAIL_SMTP["host"], port=Conf.EMAIL_SMTP["port"])
+                # mail.starttls()
+                mail.connect(Conf.EMAIL_SMTP["host"], Conf.EMAIL_SMTP["port"])
+                mail.ehlo()
+            except kr_e.KeyringError as e:
+                print(e)
+                exit(-1)
+            except smtplib.SMTPException as e:
+                print(e)
+                exit(-1)
+            except ConnectionRefusedError:
+                pass
 
         del self.mes["Subject"]
         del self.mes["From"]
         del self.mes["To"]
         self.mes.add_header("From", f"<{user}>")
         self.mes.add_header("To", ', '.join(Conf.EMAIL_RECEIVER))
-        self.data += f"""Automated Blacklist Update Report - {self.today}:\n{subject}"""
+        if subject:
+            self.subject = subject
+
+    def update_number_of_ip(self, ip_added: int = -1, ip_removed: int = -1) -> None:
+        """
+        Adds information about the number of IP address being added or removed.
+        :param int ip_added: Number of IP address that is added to the list.
+        :param int ip_removed: Number of IP address that is removed from the list.
+        :return: None
+        """
+        if ip_added > -1:
+            self.ip_added = ip_added
+        if ip_removed > -1:
+            self.ip_removed = ip_removed
 
     def msg_add(self, append_message: str = "", error: int = 0) -> None:
         """
-        Appends new information to the message body.
-        :param error: This parameter will be used if there is any error in the script.
-        :param append_message: Message to be added.
-        :type append_message: str
+        Appends new information to the message body. If verbose is disabled, only errors are added to the message.
+        :param int error: This parameter will be used if there is any error in the script.
+        :param str append_message: Message to be added.
         """
-        self.data += f"""{append_message}\n"""
+        if Conf.VERBOSE:
+            self.data += f"""{append_message}\n"""
         self.error = error
 
     def send_mail(self, error: str = "") -> None:
         """
-        Sends the email.
-        :param error: Error message if any. Default is empty ("")
-        :type error: str
+        Sends the email. If Conf.VERBOSE is False, it will only send a simple message from Conf.MESSAGE_BODY.
+        :param str error: Error message if any is found. Default is empty ("")
         :except KeyringError: if username/password can't be fetched.
         :except SMTPError: if SMTP server can't be reached.
         """
-        try:
-            _ = kr.get_password(bigip_username, "username")
-            user = f"{_}@{Conf.EMAIL_SMTP['address']}"
-            pw = kr.get_password(bigip_password, _)
-        except kr_e.KeyringError as e:
-            print(e)
-            exit(-1)
-        if error:
-            self.mes.add_header("Subject", f"{Conf.EMAIL_SUBJECT} Failed - {self.today}")
-            self.data += f"""Failed: {error}\n"""
-        elif self.error == 1:
-            self.mes.add_header("Subject", f"{Conf.EMAIL_SUBJECT} Error - {self.today}")
-            self.data += f"""Error has been captured during execution."""
-        else:
-            self.mes.add_header("Subject", f"{Conf.EMAIL_SUBJECT} Success - {self.today}")
-            self.data += """Execution Completed. \n"""
-        self.mes.set_content(self.data)
-        try:
-            mail = smtplib.SMTP(host=Conf.EMAIL_SMTP["host"], port=Conf.EMAIL_SMTP["port"])
-            mail.connect(Conf.EMAIL_SMTP["host"], Conf.EMAIL_SMTP["port"])
-            mail.send_message(
-                from_addr=user,
-                to_addrs=Conf.EMAIL_RECEIVER,
-                msg=self.mes
-            )
-            mail.quit()
-        except smtplib.SMTPException as e:
-            print(e)
-            exit(-1)
+        if Conf.SEND_EMAIL:  # So this won't be executed when email is not being sent
+            self.data += f"""{Conf.MESSAGE_BODY.format(
+                date=self.today)}\n"""
+            if Conf.VERBOSE:
+                self.data += """\nDetails: \n"""
+            try:
+                # Getting username from Keyring
+                _ = kr.get_password(bigip_username, "username")
+                user = f"{_}@{Conf.EMAIL_SMTP['address']}"
+            except kr_e.KeyringError as e:
+                print(e)
+                exit(-1)
+
+            if error:  # If the script failed entirely
+                self.mes.add_header("Subject", f"{Conf.EMAIL_SUBJECT} Failed - {self.today}")
+                self.data += f"""Failed: {error}\n"""
+            elif self.error >= 1:  # If error is found during the script
+                self.mes.add_header("Subject", f"{Conf.EMAIL_SUBJECT} Error - {self.today}")
+                self.data += f"""Error has been captured during execution."""
+            elif self.subject:  # If this is not the main script activity (credentials update etc.)
+                self.mes.add_header("Subject", f"{Conf.EMAIL_SUBJECT} {self.subject}")
+                self.data += f"""Credentials have been updated."""
+            else:
+                self.mes.add_header("Subject", f"{Conf.EMAIL_SUBJECT} Success - {self.today}")
+                self.data += """Execution Completed. \n"""
+
+            # Show how many addresses are being added and/or removed.
+            if not error and not Conf.VERBOSE and (self.ip_added > -1 or self.ip_removed > -1):
+                self.data += f"""Number of added IP address: {self.ip_added}\n"""
+                self.data += f"""Number of removed IP address: {self.ip_removed}\n"""
+            self.mes.set_content(self.data)
+            try:
+                # Sending mail
+                mail = smtplib.SMTP(host=Conf.EMAIL_SMTP["host"], port=Conf.EMAIL_SMTP["port"])
+                mail.connect(Conf.EMAIL_SMTP["host"], Conf.EMAIL_SMTP["port"])
+                mail.send_message(
+                    from_addr=user,
+                    to_addrs=Conf.EMAIL_RECEIVER,
+                    msg=self.mes
+                )
+                mail.quit()
+            except smtplib.SMTPException as e:
+                print(e)
+                exit(-1)
+            except ConnectionRefusedError:
+                pass
 
 
 class RunError(Exception):
     """This exception will be raised if there is any issues during this run."""
 
-    def __init__(self, message, errors):
-        super().__init__(message)
+    def __init__(self, message: str, errors: str):
+        """
+        This will send an email when a failure is caught that causes the script unable to continue.
+        :param str message: Message about the failure.
+        :param str errors: Exception details (if any).
+        """
         msg = Email()
         msg.msg_add(message)
         msg.send_mail(error=errors)
@@ -159,26 +203,33 @@ class RunError(Exception):
 class Blacklist:
     """
         Automates updating address lists.
-        ...
+
         Methods
-        -------
-        update_credentials(username: str = '', password: str = '') : None
+
+        ------
+
+        -- update_credentials(username: str = '', password: str = '') : None
             Method to update the credentials in Credential Manager.
-        blacklist(ssh: paramiko.SSHClient, device: BIGIP, address_list: list, destination: int, mail: Email) : None
-        whitelist(ssh: paramiko.SSHClient, device: BIGIP, address_list: list, destination: int, mail: Email) : None
-        main(self) : None
+        -- blacklist(ssh: paramiko.SSHClient, device: BIGIP, address_list: list, destination: int, mail: Email) : None
+            Method to update the blacklisted IP address
+        -- get_active_ip(big_ip_username: str, big_ip_password: str) : None
+            Method to get which self IP is the currently running device
+        -- main(self) : None
+            Main script
+
     """
 
     def __init__(self) -> None:
         """
-        This is mostly used to initialize Argument Parser, enables other scripts to automate
-        whenever there is a need to update the username/password.
+        This is mostly used to initialize Argument Parser, enables other scripts to automate whenever there is a
+        need to update the username/password.
+
         """
         # Argument Parser
         parent_args = argparse.ArgumentParser(description="Automates updating AFM blacklist.")
         parent_args.add_argument("--Update-F5-Credentials", "-cf5",
                                  action="store_true",
-                                 help="Updates the email credentials. "
+                                 help="Updates the credentials. "
                                       "Optional Arguments: --Username [Email] --Password [Password]",
                                  default=None)
         parent_args.add_argument("--Username", "-u",
@@ -198,11 +249,29 @@ class Blacklist:
     def update_credentials(username: str = '', password: str = '') -> None:
         """
         Method used to update the credentials. This will delete the old username and password and upload
-        the replacement.
-        :param username: str
+        the replacement. This requires an argument passed to be executed.
+
+        Sample 1::
+
+            python main.py --Update-F5-Credentials
+        This will prompt you for username and password.
+
+        Sample 2::
+
+            python main.py --Update-F5-Credentials --Username <username>
+        This will only prompt for password.
+
+        Sample 3::
+
+            python main.py --Update-F5-Credentials --Username <username> --Password <password>
+        This won't prompt for any input. Useful if the password update needs to be automated.
+
+
+        :param str username:
             Username for said device. If the username is not entered, username will need to be manually
             typed in.
-        :param password: str
+
+        :param str password:
             Password for said device. If the password is not entered, password will need to be manually
             typed in.
         :returns: None
@@ -254,7 +323,8 @@ class Blacklist:
         """
         # Add blacklisted IP to separate lists
         for r in range(len(addr_list)):
-            new_list = addr_list[r]
+            new_list: list = addr_list[r]
+            del_list = []
             match destination:
                 case 4:
                     new_list_name = f"{Conf.LIST_PREFIX}-{r + 1}"
@@ -262,16 +332,11 @@ class Blacklist:
                 case _:
                     new_list_name = f"{Conf.LIST_PREFIX_V6}-{r + 1}"
                     dummy_ip = "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"
-            # If address list is not found
             if not device.exist(f'/mgmt/tm/security/firewall/address-list/{new_list_name}'):
-                mail.msg_add(f'\u24d8 {new_list_name} not found. Creating new address list.')
-                _, stdout, stderr = (ssh.exec_command
-                                     (f"create net address-list {new_list_name} addresses add "
-                                      f"{{ {dummy_ip} }}"))
-                print(stdout.read().decode())
-                print(stderr.read().decode())
+                new_list.append(dummy_ip)
+                device.create(f'/mgmt/tm/security/firewall/address-list',
+                              {'name': new_list_name, 'addresses': new_list})
             else:
-                # If found, this address list will be checked for any duplicates
                 curr = \
                     device.load(
                         f'/mgmt/tm/security/firewall/address-list/{new_list_name}?$select=addresses').properties[
@@ -281,76 +346,105 @@ class Blacklist:
                     old_list.append(list(i.values())[0])
                 new_list = list(set(addr_list[r]) - set(old_list))
                 if len(new_list) == 0:
+                    f"\u24d8 There are no removed IP addresses for {new_list_name}."
                     mail.msg_add(f"\u24d8 There are no new IP addresses for {new_list_name}.")
-                    continue
-            # Split further to 1000 IPs to reduce performance impact
-            with contextlib.suppress(ValueError):
-                split_list = np.array_split(new_list, math.ceil(len(new_list) / 1000))
-                print(f'\u24d8 Adding new IP address to {new_list_name}...')
-                for i in range(len(split_list)):
-                    _, stdout, stderr = (ssh.exec_command
-                                         (f"modify net address-list {new_list_name} addresses add "
-                                          f"{{ {' '.join(map(str, split_list[i]))} }}"))
-                    exit_status = stdout.channel.recv_exit_status()
-                    if exit_status == 0:
-                        print(f"\u2705 {new_list_name}: Blacklisting of IPs success ({i + 1}/{len(split_list)}).")
+                else:
+                    with contextlib.suppress(ValueError):
+                        split_list = np.array_split(new_list, math.ceil(len(new_list) / 1000))
+                        print(f'\u24d8 Adding new IP address to {new_list_name}...')
+                        for i in range(len(split_list)):
+                            _, stdout, stderr = (ssh.exec_command
+                                                 (f"modify net address-list {new_list_name} addresses add "
+                                                  f"{{ {' '.join(map(str, split_list[i]))} }}"))
+                            exit_status = stdout.channel.recv_exit_status()
+                            if exit_status == 0:
+                                print(
+                                    f"\u2705 {new_list_name}: Blacklisting of IPs success ({i + 1}/{len(split_list)}).")
 
-                    else:
-                        print(f"\u274c {new_list_name}: Blacklisting of IPs failed ({i + 1}/{len(split_list)}).")
-                        mail.msg_add(f"\u274c {new_list_name}: Blacklisting of IPs failed ({i + 1}/{len(split_list)}).")
-                        print(stdout.read().decode().strip())
-                        print(stderr.read().decode().strip())
-                mail.msg_add(
-                    f"\u2705 {new_list_name}: Blacklisting of IPs success. Number of addresses added: {len(new_list)}")
+                            else:
+                                print(
+                                    f"\u274c {new_list_name}: Blacklisting of IPs failed ({i + 1}/{len(split_list)}).")
+                                mail.msg_add(
+                                    f"\u274c {new_list_name}: Blacklisting of IPs failed ({i + 1}/{len(split_list)}).")
+                                print(stdout.read().decode().strip())
+                                print(stderr.read().decode().strip())
+
+                # Whitelisting
+                print("Removing IP address from the address list...")
+                new_curr = \
+                    device.load(
+                        f'/mgmt/tm/security/firewall/address-list/{new_list_name}?$select=addresses').properties[
+                        "addresses"]
+                curr_list = []
+                for i in new_curr:
+                    curr_list.append(list(i.values())[0])
+                del_list = list(set(curr_list) - set(addr_list[r]) - {dummy_ip})
+                print(del_list)
+                if len(del_list) <= 1:
+                    print(f"\u24d8 There are no removed IP addresses for {new_list_name}.")
+                    mail.msg_add(f"\u24d8 There are no removed IP addresses for {new_list_name}.")
+                else:
+                    with contextlib.suppress(ValueError):
+                        split_list = np.array_split(del_list, math.ceil(len(del_list) / 1000))
+                        print(f'\u24d8 Removing IP address from {new_list_name}...')
+                        for i in range(len(split_list)):
+                            _, stdout, stderr = (ssh.exec_command
+                                                 (f"modify net address-list {new_list_name} addresses delete "
+                                                  f"{{ {' '.join(map(str, split_list[i]))} }}"))
+                            exit_status = stdout.channel.recv_exit_status()
+                            if exit_status == 0:
+                                print(
+                                    f"\u2705 {new_list_name}: Whitelisting of IPs success ({i + 1}/{len(split_list)}).")
+
+                            else:
+                                print(
+                                    f"\u274c {new_list_name}: Whitelisting of IPs failed ({i + 1}/{len(split_list)}).")
+                                mail.msg_add(
+                                    f"\u274c {new_list_name}: Whitelisting of IPs failed ({i + 1}/{len(split_list)}).")
+                                print(stdout.read().decode().strip())
+                                print(stderr.read().decode().strip())
+            mail.update_number_of_ip(ip_added=len(new_list), ip_removed=len(del_list))
+            mail.msg_add(
+                f"\u2705 {new_list_name}: Blacklisting of IPs success. "
+                f"Number of addresses added: {len(new_list)}")
+            mail.msg_add(
+                f"\u2705 {new_list_name}: Whitelisting of IPs success. "
+                f"Number of addresses removed: {len(del_list)}")
 
     @staticmethod
-    def whitelist(ssh: paramiko.SSHClient, device: BIGIP, addr_list: list, destination: int, mail: Email) -> None:
-        for r in range(len(addr_list)):
-            with contextlib.suppress(ValueError):
-                # todo: Test if whitelisting would mess up if one of them are not found
-                # cause if so, there will be a need to verify the IP address existence
-                whitelisting: list = addr_list[r]
-                match destination:
-                    case 4:
-                        new_list_name = f"{Conf.LIST_PREFIX}-{r + 1}"
-                    case _:
-                        new_list_name = f"{Conf.LIST_PREFIX_V6}-{r + 1}"
-                new = []
-                if not device.exist(f'/mgmt/tm/security/firewall/address-list/{new_list_name}'):
-                    mail.msg_add(f'\u24d8 {new_list_name} not found.')
-                else:
-                    # If found, this address list will be checked for any duplicates
-                    curr = device.load(
-                        f'/mgmt/tm/security/firewall/address-list/{new_list_name}?$select=addresses') \
-                        .properties["addresses"]
-                    old_list = []
-                    for i in curr:
-                        old_list.append(list(i.values())[0])
-                    for each in whitelisting:
-                        if each in old_list:
-                            print(f"{each} in current list.")
-                            new.append(each)
-
-                split_list = np.array_split(new, math.ceil(len(new) / 1000))
-                for i in range(len(split_list)):
-                    _, stdout, stderr = (ssh.exec_command
-                                         (f"modify net address-list {new_list_name} addresses delete "
-                                          f"{{ {' '.join(map(str, split_list[i]))} }}"))
-                    exit_status = stdout.channel.recv_exit_status()
-                    if exit_status == 0:
-                        print(
-                            f"  \u2705 {new_list_name} ({i + 1}/{len(split_list)}): Whitelisting of IPs success.")
-                    else:
-                        mail.msg_add(
-                            f"  \u274c {new_list_name} ({i + 1}/{len(split_list)}): Whitelisting of IPs failed.")
-                        mail.msg_add(stderr.read().decode().strip())
-                        print(stdout.read().decode().strip())
-                        print(stderr.read().decode().strip())
-                mail.msg_add(
-                    f"\u2705 {new_list_name}: Whitelisting success. Of {len(whitelisting)}, "
-                    f"numbers of IP removed: {len(new)}. {len(whitelisting) - len(new)} are not found in the list.")
+    def get_active_ip(big_ip_username: str, big_ip_password: str) -> str:
+        """
+        Get which device is currently the active device.
+        :param str big_ip_username: F5 Username
+        :param str big_ip_password: F5 Password
+        :return: The active box's IP address
+        :except requests.exceptions.ConnectTimeout: If the first box is unreachable.
+        """
+        try:
+            device = BIGIP(device=Conf.SELF_IP1, session_verify=False, username=big_ip_username,
+                           password=big_ip_password,
+                           timeout=10)
+            ha_status = device.load("/mgmt/tm/cm/failover-status?$select=status").properties
+            status = \
+                ha_status['entries']['https://localhost/mgmt/tm/cm/failover-status/0']['nestedStats']['entries'][
+                    'status'][
+                    'description']
+            if status == "ACTIVE":
+                return Conf.SELF_IP1
+            else:
+                return Conf.SELF_IP2
+        except requests.exceptions.ConnectTimeout:
+            print(f"{Conf.SELF_IP1} can't be connected. Trying {Conf.SELF_IP2}...")
+            return Conf.SELF_IP2
 
     def main(self) -> None:
+        """
+        The main script.
+        :except RunError: If there are any issues with the script's prerequisites.
+        :except paramiko.ssh_exception.AuthenticationException: If the username and/or password is incorrect.
+        :except socket.error: If the script is unable to reach the device.
+        :except Exception: If the script is unable to reach the txt file.
+        """
         mail = Email()
         print(f"\u24d8 Checking for credentials...")
         # Get BIG IP username & password
@@ -360,35 +454,33 @@ class Blacklist:
             raise RunError(
                 "\u274c Username or password for BIG IP is not found. Ensure you have updated the username or \n"
                 "password and not delete them from the vault.", "Authentication Failed")
-
+        active_ip = self.get_active_ip(big_ip_username, big_ip_password)
         # SSH to BIG IP
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy)
         print(f"\u24d8 Starting SSH...")
         try:
-            ssh.connect(hostname=Conf.SELF_IP1, username=big_ip_username, password=big_ip_password)
+            ssh.connect(hostname=active_ip, username=big_ip_username, password=big_ip_password)
         except KeyboardInterrupt:
             exit()
         except paramiko.ssh_exception.AuthenticationException as e:
             print(f"\u274c Failed.")
             raise RunError(
                 message=f"\u274c Authentication with BIG-IP failed. Please ensure your username/password are correct."
-                        f"Details: {e}", errors=e)
+                        f"Details: {e}", errors=str(e))
         except socket.error as e:
             print(f"\u274c Failed.")
             raise RunError(
                 message="\u274c Error: SSH with BIG-IP failed. Please ensure you are able to connect with BIG-IP and "
                         "firewalls have been opened."
-                        f"Details: {e}", errors=e)
+                        f"Details: {e}", errors=str(e))
         print(f"\u2705 SSH Success.")
         print(f"\u24d8 Logging in to BIG-IP through iControl...")
-        device = BIGIP(device=Conf.SELF_IP1, session_verify=False, username=big_ip_username, password=big_ip_password)
-
+        device = BIGIP(device=active_ip, session_verify=False, username=big_ip_username, password=big_ip_password,
+                       timeout=120)
         # Getting blacklisted address
         blacklist = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT)]
         blacklist_v6 = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT_V6)]
-        whitelist = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT)]
-        whitelist_v6 = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT_V6)]
         # check if Z: is mounted and if not, mount it.
         # if not (os.path.exists(Conf.MOUNT_LETTER)):
         #     # nas_username = kr.get_password(f"{Conf.NAS_ADDRESS}.username", username="username")
@@ -417,7 +509,7 @@ class Blacklist:
         print(f"\u24d8 Accessing {Conf.BLACKLIST_URL}...")
         try:
             for line in http_req.urlopen(Conf.BLACKLIST_URL):
-                ip_address = line.decode('utf-8').strip()
+                ip_address: str = line.decode('utf-8').strip()
                 split = re.split('[.:]', string=ip_address)
                 # Check if this is an IPv6 address
                 if ip_address.find(':') != -1:  # IPv6
@@ -429,30 +521,12 @@ class Blacklist:
         except Exception as e:
             raise RunError(f"\u274c Accessing to {Conf.BLACKLIST_URL} failed. "
                            f"Please ensure that the firewall is open and re-run this script.",
-                           errors=e)
+                           errors=str(e))
 
         self.blacklist(ssh=ssh, device=device, addr_list=blacklist, destination=4, mail=mail)
         self.blacklist(ssh=ssh, device=device, addr_list=blacklist_v6, destination=6, mail=mail)
-        mail.msg_add(f"\u2705 Blacklisting has been completed."
-                     f"\nNumber of IPv4 address added: {sum(len(x) for x in blacklist)}"
-                     f"\nNumber of IPv6 address added: {sum(len(x) for x in blacklist_v6)}\n")
-        # Get whitelist and remove them from AFM
-        print(f"\u24d8 Accessing {Conf.WHITELIST_URL}")
-        for line in http_req.urlopen(Conf.WHITELIST_URL):
-            ip_address = line.decode('utf-8').strip()
-            split = re.split('[.:]', string=ip_address)
-            # Check if this is an IPv6 address
-            if ip_address.find(':') != -1:  # IPv6
-                array_location = (int(split[0], 16) % Conf.ARRAY_AMOUNT_V6)
-                whitelist_v6[array_location].append(ip_address)
-            else:  # IPv4
-                array_location = (int(split[0]) % Conf.ARRAY_AMOUNT)
-                whitelist[array_location].append(ip_address)
-        self.whitelist(ssh=ssh, device=device, addr_list=whitelist, destination=4, mail=mail)
-        self.whitelist(ssh=ssh, device=device, addr_list=whitelist_v6, destination=6, mail=mail)
-        mail.msg_add(f"\u2705 Whitelisting has been completed."
-                     f"\nNumber of IPv4 address removed: {sum(len(x) for x in whitelist)}"
-                     f"\nNumber of IPv6 address removed: {sum(len(x) for x in whitelist_v6)}\n")
+        mail.msg_add(f"\u2705 Blacklisting has been completed.")
+
         # The BIG IP will only be synced if sync-group name is entered.
         if Conf.SYNC_GROUP_NAME:
             print(f"\u24d8 Syncing HA device...")
