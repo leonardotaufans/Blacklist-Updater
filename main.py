@@ -37,8 +37,8 @@ class Conf:
     SELF_IP1 = '10.1.0.122'  # BIG IP Self IP address for Box 1.
     LIST_PREFIX = "security_blacklist"  # Prefix for the address lists.
     LIST_PREFIX_V6 = "v6_security_blacklist"  # Prefix for IPv6 address lists
-    BLACKLIST_URL = "http://10.10.10.104:8000/blacklist.txt"  # Path for blacklist file
-    WHITELIST_URL = "http://10.10.10.104:8000/removeblacklist.txt"  # Path for whitelist file
+    BLACKLIST_URL = "http://10.10.10.11:8000/blacklist.txt"  # Path for blacklist file
+    # WHITELIST_URL = "http://10.10.10.104:8000/removeblacklist.txt"  # Path for whitelist file
     # MOUNT_LETTER = "Z:"
     # NAS_ADDRESS = "\\\\LEON-PC\\shared"
     # For email
@@ -254,101 +254,24 @@ class Blacklist:
         """
         # Add blacklisted IP to separate lists
         for r in range(len(addr_list)):
-            new_list = addr_list[r]
+            new_list: list = addr_list[r]
             match destination:
                 case 4:
                     new_list_name = f"{Conf.LIST_PREFIX}-{r + 1}"
                     dummy_ip = "233.252.0.255"
+                    new_list.append(dummy_ip)
                 case _:
                     new_list_name = f"{Conf.LIST_PREFIX_V6}-{r + 1}"
                     dummy_ip = "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"
-            # If address list is not found
-            if not device.exist(f'/mgmt/tm/security/firewall/address-list/{new_list_name}'):
-                mail.msg_add(f'\u24d8 {new_list_name} not found. Creating new address list.')
-                _, stdout, stderr = (ssh.exec_command
-                                     (f"create net address-list {new_list_name} addresses add "
-                                      f"{{ {dummy_ip} }}"))
-                print(stdout.read().decode())
-                print(stderr.read().decode())
-            else:
-                # If found, this address list will be checked for any duplicates
-                curr = \
-                    device.load(
-                        f'/mgmt/tm/security/firewall/address-list/{new_list_name}?$select=addresses').properties[
-                        "addresses"]
-                old_list = []
-                for i in curr:
-                    old_list.append(list(i.values())[0])
-                new_list = list(set(addr_list[r]) - set(old_list))
-                if len(new_list) == 0:
-                    mail.msg_add(f"\u24d8 There are no new IP addresses for {new_list_name}.")
-                    continue
-            # Split further to 1000 IPs to reduce performance impact
+                    new_list.append(dummy_ip)
+
             with contextlib.suppress(ValueError):
-                split_list = np.array_split(new_list, math.ceil(len(new_list) / 1000))
-                print(f'\u24d8 Adding new IP address to {new_list_name}...')
-                for i in range(len(split_list)):
-                    _, stdout, stderr = (ssh.exec_command
-                                         (f"modify net address-list {new_list_name} addresses add "
-                                          f"{{ {' '.join(map(str, split_list[i]))} }}"))
-                    exit_status = stdout.channel.recv_exit_status()
-                    if exit_status == 0:
-                        print(f"\u2705 {new_list_name}: Blacklisting of IPs success ({i + 1}/{len(split_list)}).")
-
-                    else:
-                        print(f"\u274c {new_list_name}: Blacklisting of IPs failed ({i + 1}/{len(split_list)}).")
-                        mail.msg_add(f"\u274c {new_list_name}: Blacklisting of IPs failed ({i + 1}/{len(split_list)}).")
-                        print(stdout.read().decode().strip())
-                        print(stderr.read().decode().strip())
+                device.modify(f'/mgmt/tm/security/firewall/address-list/{new_list_name}',
+                              {'addresses': new_list})
                 mail.msg_add(
-                    f"\u2705 {new_list_name}: Blacklisting of IPs success. Number of addresses added: {len(new_list)}")
-
-    @staticmethod
-    def whitelist(ssh: paramiko.SSHClient, device: BIGIP, addr_list: list, destination: int, mail: Email) -> None:
-        for r in range(len(addr_list)):
-            with contextlib.suppress(ValueError):
-                # todo: Test if whitelisting would mess up if one of them are not found
-                # cause if so, there will be a need to verify the IP address existence
-                whitelisting: list = addr_list[r]
-                match destination:
-                    case 4:
-                        new_list_name = f"{Conf.LIST_PREFIX}-{r + 1}"
-                    case _:
-                        new_list_name = f"{Conf.LIST_PREFIX_V6}-{r + 1}"
-                new = []
-                if not device.exist(f'/mgmt/tm/security/firewall/address-list/{new_list_name}'):
-                    mail.msg_add(f'\u24d8 {new_list_name} not found.')
-                else:
-                    # If found, this address list will be checked for any duplicates
-                    curr = device.load(
-                        f'/mgmt/tm/security/firewall/address-list/{new_list_name}?$select=addresses') \
-                        .properties["addresses"]
-                    old_list = []
-                    for i in curr:
-                        old_list.append(list(i.values())[0])
-                    for each in whitelisting:
-                        if each in old_list:
-                            print(f"{each} in current list.")
-                            new.append(each)
-
-                split_list = np.array_split(new, math.ceil(len(new) / 1000))
-                for i in range(len(split_list)):
-                    _, stdout, stderr = (ssh.exec_command
-                                         (f"modify net address-list {new_list_name} addresses delete "
-                                          f"{{ {' '.join(map(str, split_list[i]))} }}"))
-                    exit_status = stdout.channel.recv_exit_status()
-                    if exit_status == 0:
-                        print(
-                            f"  \u2705 {new_list_name} ({i + 1}/{len(split_list)}): Whitelisting of IPs success.")
-                    else:
-                        mail.msg_add(
-                            f"  \u274c {new_list_name} ({i + 1}/{len(split_list)}): Whitelisting of IPs failed.")
-                        mail.msg_add(stderr.read().decode().strip())
-                        print(stdout.read().decode().strip())
-                        print(stderr.read().decode().strip())
-                mail.msg_add(
-                    f"\u2705 {new_list_name}: Whitelisting success. Of {len(whitelisting)}, "
-                    f"numbers of IP removed: {len(new)}. {len(whitelisting) - len(new)} are not found in the list.")
+                    f"\u2705 {new_list_name}: Blacklisting of IPs success. "
+                    f"Number of addresses added: {len(new_list) - 1}")
+                print(f"{new_list_name}")
 
     def main(self) -> None:
         mail = Email()
@@ -382,13 +305,11 @@ class Blacklist:
                         f"Details: {e}", errors=e)
         print(f"\u2705 SSH Success.")
         print(f"\u24d8 Logging in to BIG-IP through iControl...")
-        device = BIGIP(device=Conf.SELF_IP1, session_verify=False, username=big_ip_username, password=big_ip_password)
-
+        device = BIGIP(device=Conf.SELF_IP1, session_verify=False, username=big_ip_username, password=big_ip_password,
+                       timeout=120)
         # Getting blacklisted address
         blacklist = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT)]
         blacklist_v6 = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT_V6)]
-        whitelist = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT)]
-        whitelist_v6 = [[] * 16 for _ in range(Conf.ARRAY_AMOUNT_V6)]
         # check if Z: is mounted and if not, mount it.
         # if not (os.path.exists(Conf.MOUNT_LETTER)):
         #     # nas_username = kr.get_password(f"{Conf.NAS_ADDRESS}.username", username="username")
@@ -436,23 +357,7 @@ class Blacklist:
         mail.msg_add(f"\u2705 Blacklisting has been completed."
                      f"\nNumber of IPv4 address added: {sum(len(x) for x in blacklist)}"
                      f"\nNumber of IPv6 address added: {sum(len(x) for x in blacklist_v6)}\n")
-        # Get whitelist and remove them from AFM
-        print(f"\u24d8 Accessing {Conf.WHITELIST_URL}")
-        for line in http_req.urlopen(Conf.WHITELIST_URL):
-            ip_address = line.decode('utf-8').strip()
-            split = re.split('[.:]', string=ip_address)
-            # Check if this is an IPv6 address
-            if ip_address.find(':') != -1:  # IPv6
-                array_location = (int(split[0], 16) % Conf.ARRAY_AMOUNT_V6)
-                whitelist_v6[array_location].append(ip_address)
-            else:  # IPv4
-                array_location = (int(split[0]) % Conf.ARRAY_AMOUNT)
-                whitelist[array_location].append(ip_address)
-        self.whitelist(ssh=ssh, device=device, addr_list=whitelist, destination=4, mail=mail)
-        self.whitelist(ssh=ssh, device=device, addr_list=whitelist_v6, destination=6, mail=mail)
-        mail.msg_add(f"\u2705 Whitelisting has been completed."
-                     f"\nNumber of IPv4 address removed: {sum(len(x) for x in whitelist)}"
-                     f"\nNumber of IPv6 address removed: {sum(len(x) for x in whitelist_v6)}\n")
+
         # The BIG IP will only be synced if sync-group name is entered.
         if Conf.SYNC_GROUP_NAME:
             print(f"\u24d8 Syncing HA device...")
