@@ -8,6 +8,8 @@ import smtplib
 import socket
 from datetime import date
 from email.message import EmailMessage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from urllib import request as http_req
 
 import keyring as kr
@@ -48,10 +50,9 @@ class Conf:
     EMAIL_SMTP = {"host": "localhost", "address": "sp.edu.sg", "port": 25}  # For debugging only todo:
     # EMAIL_SMTP = {"host": "smtp.sp.edu.sg", "address": "sp.edu.sg", "port": 25}  # SMTP address
     MESSAGE_BODY = \
-        """
-        <h1>Automated Blacklist Update Report</h1>\n
-        Date: {date}
-        Requested action has been completed.
+        """Automated Blacklist Update Report\n
+Date: {date}\n
+{result}\n
         """  # If there is a template needed for the email
 
 
@@ -137,8 +138,10 @@ class Email:
         :except SMTPError: if SMTP server can't be reached.
         """
         if Conf.SEND_EMAIL:  # So this won't be executed when email is not being sent
-            self.data += f"""{Conf.MESSAGE_BODY.format(
-                date=self.today)}\n"""
+            result = "The script has been executed successfully."
+            if error:
+                result = "The script found an error that needs to be fixed."
+            self.data += f"""{Conf.MESSAGE_BODY.format(date=self.today, result=result)}\n"""
             if Conf.VERBOSE:
                 self.data += """\nDetails: \n"""
             try:
@@ -166,7 +169,8 @@ class Email:
             if not error and not Conf.VERBOSE and (self.ip_added > -1 or self.ip_removed > -1):
                 self.data += f"""Number of added IP address: {self.ip_added}\n"""
                 self.data += f"""Number of removed IP address: {self.ip_removed}\n"""
-            self.mes.set_content(self.data)
+
+            self.mes.set_payload(self.data)
             try:
                 # Sending mail
                 mail = smtplib.SMTP(host=Conf.EMAIL_SMTP["host"], port=Conf.EMAIL_SMTP["port"])
